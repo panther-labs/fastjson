@@ -1,6 +1,8 @@
 package fastjson
 
 import (
+	"bytes"
+	"encoding/json"
 	"fmt"
 	"math"
 	"strings"
@@ -1274,4 +1276,60 @@ func testParseGetSerial(s string) error {
 		}
 	}
 	return nil
+}
+
+// Tests for https://github.com/valyala/fastjson/issues/90
+// This was manifesting due to the use of strconv.AppendQuote
+func TestUTF8NonPrintableArtifacts(t *testing.T) {
+	testCases := []struct {
+		name string
+		s    string
+	}{
+		{
+			name: "problematic bytes",
+			s:    "data:\"\\xd6`\\xb76d\\xf6E\U000E8737(\\x91\\xb294\"",
+		},
+	}
+
+	for _, tc := range testCases {
+		t.Run(tc.name, func(t *testing.T) {
+			jsonEnvelope := struct {
+				Inner string
+			}{
+				Inner: tc.s,
+			}
+
+			m, err := json.Marshal(jsonEnvelope) // `m` is a full valid json
+			if err != nil {
+				t.Fatalf("unexpected error: %s", err)
+			}
+
+			// we will pass that `m` json through a fastjson marshal/unmarshal cycle
+
+			fastjsonValue, err := ParseBytes(m)
+			if err != nil {
+				t.Fatalf("unexpected error: %s", err)
+			}
+
+			o, err := fastjsonValue.Object()
+			if err != nil {
+				t.Fatalf("unexpected error: %s", err)
+			}
+
+			// In order to trigger the bug we need to visit all the keys and call Type() on them
+			o.Visit(func(k []byte, v *Value) {
+				v.Type()
+			})
+
+			res := fastjsonValue.MarshalTo(nil)
+			if !bytes.Equal(res, m) {
+				t.Fatalf("unexpected result; got %q; want %q", res, m)
+			}
+
+			err = ValidateBytes(res)
+			if err != nil {
+				t.Fatalf("unexpected error: %s", err)
+			}
+		})
+	}
 }
