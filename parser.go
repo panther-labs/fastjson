@@ -279,7 +279,7 @@ const hex = "0123456789abcdef"
 // The difference with the earlier versions is that this one validates UTF-8 strings rune by rune.
 // Check the test case in the `TestNonUTF8` function in the `parser_test.go` file
 //
-// The bool argument `htmlEscape` has been removed for now, but comments are left in
+// The bool argument `htmlEscape` has been removed for now (considered always `true`), but comments are left in
 func escapeString(dst []byte, src string) []byte {
 	dst = append(dst, '"')
 	start := 0
