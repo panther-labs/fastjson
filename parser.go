@@ -6,6 +6,7 @@ import (
 	"strconv"
 	"strings"
 	"unicode/utf16"
+	"unicode/utf8"
 )
 
 // Parser parses JSON.
@@ -266,40 +267,87 @@ func parseObject(s string, c *cache, depth int) (*Value, string, error) {
 	}
 }
 
-func escapeString(dst []byte, s string) []byte {
+const hex = "0123456789abcdef"
+
+// According to the JSON spec: https://datatracker.ietf.org/doc/html/rfc8259#section-8.1
+// > "JSON text exchanged between systems that are not part of a closed ecosystem MUST be encoded using UTF-8"
+// However, go strings are not *enforced* to be UTF-8. They are represented as such but anything can reside within them.
+//
+// This function is a copy-paste from the stdlib's `encoding/json` package (named `appendString`)
+// https://cs.opensource.google/go/go/+/refs/tags/go1.23.2:src/encoding/json/encode.go;l=967
+//
+// The difference with the earlier versions is that this one validates UTF-8 strings rune by rune.
+// Check the test case in the `TestNonUTF8` function in the `parser_test.go` file
+//
+// The bool argument `htmlEscape` has been removed for now, but comments are left in
+func escapeString(dst []byte, src string) []byte {
 	dst = append(dst, '"')
-	for i := 0; i < len(s); i++ {
-		c := s[i]
-		switch {
-		case c == '"':
-			// quotation mark
-			dst = append(dst, []byte{'\\', '"'}...)
-		case c == '\\':
-			// reverse solidus
-			dst = append(dst, []byte{'\\', '\\'}...)
-		case c >= 0x20:
-			// default, rest below are control chars
-			dst = append(dst, c)
-		case c == 0x08:
-			dst = append(dst, []byte{'\\', 'b'}...)
-		case c < 0x09:
-			dst = append(dst, []byte{'\\', 'u', '0', '0', '0', '0' + c}...)
-		case c == 0x09:
-			dst = append(dst, []byte{'\\', 't'}...)
-		case c == 0x0a:
-			dst = append(dst, []byte{'\\', 'n'}...)
-		case c == 0x0c:
-			dst = append(dst, []byte{'\\', 'f'}...)
-		case c == 0x0d:
-			dst = append(dst, []byte{'\\', 'r'}...)
-		case c < 0x10:
-			dst = append(dst, []byte{'\\', 'u', '0', '0', '0', 0x57 + c}...)
-		case c < 0x1a:
-			dst = append(dst, []byte{'\\', 'u', '0', '0', '1', 0x20 + c}...)
-		case c < 0x20:
-			dst = append(dst, []byte{'\\', 'u', '0', '0', '1', 0x47 + c}...)
+	start := 0
+	for i := 0; i < len(src); {
+		if b := src[i]; b < utf8.RuneSelf {
+			if safeSet[b] {
+				i++
+				continue
+			}
+			dst = append(dst, src[start:i]...)
+			switch b {
+			case '\\', '"':
+				dst = append(dst, '\\', b)
+			case '\b':
+				dst = append(dst, '\\', 'b')
+			case '\f':
+				dst = append(dst, '\\', 'f')
+			case '\n':
+				dst = append(dst, '\\', 'n')
+			case '\r':
+				dst = append(dst, '\\', 'r')
+			case '\t':
+				dst = append(dst, '\\', 't')
+			default:
+				// This encodes bytes < 0x20 except for \b, \f, \n, \r and \t.
+				// If escapeHTML is set, it also escapes <, >, and &
+				// because they can lead to security holes when
+				// user-controlled strings are rendered into JSON
+				// and served to some browsers.
+				dst = append(dst, '\\', 'u', '0', '0', hex[b>>4], hex[b&0xF])
+			}
+			i++
+			start = i
+			continue
 		}
+		// TODO(https://go.dev/issue/56948): Use generic utf8 functionality.
+		// For now, cast only a small portion of byte slices to a string
+		// so that it can be stack allocated. This slows down []byte slightly
+		// due to the extra copy, but keeps string performance roughly the same.
+		n := len(src) - i
+		if n > utf8.UTFMax {
+			n = utf8.UTFMax
+		}
+		c, size := utf8.DecodeRuneInString(src[i : i+n]) // This ensures UTF-8 valid strings
+		if c == utf8.RuneError && size == 1 {
+			dst = append(dst, src[start:i]...)
+			dst = append(dst, `\ufffd`...)
+			i += size
+			start = i
+			continue
+		}
+		// U+2028 is LINE SEPARATOR.
+		// U+2029 is PARAGRAPH SEPARATOR.
+		// They are both technically valid characters in JSON strings,
+		// but don't work in JSONP, which has to be evaluated as JavaScript,
+		// and can lead to security holes there. It is valid JSON to
+		// escape them, so we do so unconditionally.
+		// See https://en.wikipedia.org/wiki/JSON#Safety.
+		if c == '\u2028' || c == '\u2029' {
+			dst = append(dst, src[start:i]...)
+			dst = append(dst, '\\', 'u', '2', '0', '2', hex[c&0xF])
+			i += size
+			start = i
+			continue
+		}
+		i += size
 	}
+	dst = append(dst, src[start:]...)
 	dst = append(dst, '"')
 	return dst
 }
@@ -987,3 +1035,103 @@ var (
 	valueFalse = &Value{t: TypeFalse}
 	valueNull  = &Value{t: TypeNull}
 )
+
+// html safe set copy-pasted from encoding/json
+var safeSet = [utf8.RuneSelf]bool{
+	' ':      true,
+	'!':      true,
+	'"':      false,
+	'#':      true,
+	'$':      true,
+	'%':      true,
+	'&':      true,
+	'\'':     true,
+	'(':      true,
+	')':      true,
+	'*':      true,
+	'+':      true,
+	',':      true,
+	'-':      true,
+	'.':      true,
+	'/':      true,
+	'0':      true,
+	'1':      true,
+	'2':      true,
+	'3':      true,
+	'4':      true,
+	'5':      true,
+	'6':      true,
+	'7':      true,
+	'8':      true,
+	'9':      true,
+	':':      true,
+	';':      true,
+	'<':      true,
+	'=':      true,
+	'>':      true,
+	'?':      true,
+	'@':      true,
+	'A':      true,
+	'B':      true,
+	'C':      true,
+	'D':      true,
+	'E':      true,
+	'F':      true,
+	'G':      true,
+	'H':      true,
+	'I':      true,
+	'J':      true,
+	'K':      true,
+	'L':      true,
+	'M':      true,
+	'N':      true,
+	'O':      true,
+	'P':      true,
+	'Q':      true,
+	'R':      true,
+	'S':      true,
+	'T':      true,
+	'U':      true,
+	'V':      true,
+	'W':      true,
+	'X':      true,
+	'Y':      true,
+	'Z':      true,
+	'[':      true,
+	'\\':     false,
+	']':      true,
+	'^':      true,
+	'_':      true,
+	'`':      true,
+	'a':      true,
+	'b':      true,
+	'c':      true,
+	'd':      true,
+	'e':      true,
+	'f':      true,
+	'g':      true,
+	'h':      true,
+	'i':      true,
+	'j':      true,
+	'k':      true,
+	'l':      true,
+	'm':      true,
+	'n':      true,
+	'o':      true,
+	'p':      true,
+	'q':      true,
+	'r':      true,
+	's':      true,
+	't':      true,
+	'u':      true,
+	'v':      true,
+	'w':      true,
+	'x':      true,
+	'y':      true,
+	'z':      true,
+	'{':      true,
+	'|':      true,
+	'}':      true,
+	'~':      true,
+	'\u007f': true,
+}
