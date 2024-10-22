@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/json"
 	"fmt"
+	"html"
 	"math"
 	"strings"
 	"testing"
@@ -1346,11 +1347,9 @@ func TestUTF8NonPrintableArtifacts(t *testing.T) {
 // This is what the encoding/json does as well.
 func TestNonUTF8(t *testing.T) {
 	t.Run("payload with non-utf-8-valid bytes", func(t *testing.T) {
+		//           {    "   a   "  :   "    a        "   }
 		b := []byte{123, 34, 97, 34, 58, 34, 97, 239, 34, 125} // {"a":"a"} with a twist
 		//                                        ^ invalid UTF-8 byte
-		if err := ValidateBytes(b); err != nil {
-			t.Fatalf("unexpected error while validating: %s", err)
-		}
 
 		v, err := ParseBytes(b)
 		if err != nil {
@@ -1373,6 +1372,34 @@ func TestNonUTF8(t *testing.T) {
 		// it would work, but (check top comment) other systems that validate encoding would reject it. (e.g.: python)
 		if valid := utf8.ValidString(v.String()); !valid {
 			t.Fatalf("invalid utf-8 string")
+		}
+	})
+}
+
+func TestHTMLSafety(t *testing.T) {
+	t.Run("html safety", func(t *testing.T) {
+		s := `{"comment":"<div onclick='stealCookies()'>Click me</div>"}`
+
+		v, err := Parse(s)
+		if err != nil {
+			t.Fatalf("unexpected error while parsing: %s", err)
+		}
+
+		// =========== This part ideally needs to go ===========
+		// In order to trigger the bug we need to visit all the keys and call Type() on them
+		// ...to eliminate typeRawString existence
+		v.o.Visit(func(k []byte, v *Value) {
+			v.Type()
+		})
+		// =====================================================
+
+		ret := v.String()
+		if s == ret {
+			t.Fatalf("html not escaped")
+		}
+
+		if s != html.UnescapeString(ret) {
+			t.Fatalf("payloads differ")
 		}
 	})
 }

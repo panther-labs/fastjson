@@ -285,7 +285,7 @@ func escapeString(dst []byte, src string) []byte {
 	start := 0
 	for i := 0; i < len(src); {
 		if b := src[i]; b < utf8.RuneSelf {
-			if safeSet[b] {
+			if htmlSafeSet[b] {
 				i++
 				continue
 			}
@@ -1037,14 +1037,14 @@ var (
 )
 
 // html safe set copy-pasted from encoding/json
-var safeSet = [utf8.RuneSelf]bool{
+var htmlSafeSet = [utf8.RuneSelf]bool{
 	' ':      true,
 	'!':      true,
 	'"':      false,
 	'#':      true,
 	'$':      true,
 	'%':      true,
-	'&':      true,
+	'&':      false,
 	'\'':     true,
 	'(':      true,
 	')':      true,
@@ -1066,9 +1066,9 @@ var safeSet = [utf8.RuneSelf]bool{
 	'9':      true,
 	':':      true,
 	';':      true,
-	'<':      true,
+	'<':      false,
 	'=':      true,
-	'>':      true,
+	'>':      false,
 	'?':      true,
 	'@':      true,
 	'A':      true,
