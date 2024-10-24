@@ -8,6 +8,7 @@ import (
 	"strings"
 	"testing"
 	"time"
+	"unicode/utf8"
 )
 
 func TestParseRawNumber(t *testing.T) {
@@ -1196,6 +1197,8 @@ func TestParserParse(t *testing.T) {
 
 		// Make sure the json remains valid after visiting all the items.
 		ss := v.String()
+		s = strings.ReplaceAll(s, "&", "\\u0026") // there is a '&' in the json, which should be escaped.
+
 		if ss != s {
 			t.Fatalf("unexpected string representation for object; got\n%q; want\n%q", ss, s)
 		}
@@ -1280,6 +1283,8 @@ func testParseGetSerial(s string) error {
 
 // Tests for https://github.com/valyala/fastjson/issues/90
 // This was manifesting due to the use of strconv.AppendQuote
+//
+// This is for utf-8 valid but as-of-yet unassigned characters
 func TestUTF8NonPrintableArtifacts(t *testing.T) {
 	testCases := []struct {
 		name string
@@ -1332,4 +1337,66 @@ func TestUTF8NonPrintableArtifacts(t *testing.T) {
 			}
 		})
 	}
+}
+
+// According to the JSON spec: https://datatracker.ietf.org/doc/html/rfc8259#section-8.1
+// > "JSON text exchanged between systems that are not part of a closed ecosystem MUST be encoded using UTF-8"
+// However, go strings are not *enforced* to be UTF-8. They are represented as such but anything can reside within them.
+//
+// This test ensure that in case of non-utf-8 bytes, the fastjson library can produce valid string and will replace
+// the invalid bytes with the Unicode replacement character. (U+FFFD)
+// This is what the encoding/json does as well.
+func TestNonUTF8(t *testing.T) {
+	t.Run("payload with non-utf-8-valid bytes", func(t *testing.T) {
+		//           {    "   a   "  :   "    a        "   }
+		b := []byte{123, 34, 97, 34, 58, 34, 97, 239, 34, 125} // {"a":"a"} with a twist
+		//                                        ^ invalid UTF-8 byte
+
+		v, err := ParseBytes(b)
+		if err != nil {
+			t.Fatalf("unexpected error while parsing: %s", err)
+		}
+
+		// =========== This part ideally needs to go ===========
+		// In order to trigger the bug we need to visit all the keys and call Type() on them
+		// ...to eliminate typeRawString existence
+		if typ := v.Type(); typ != TypeObject {
+			t.Fatalf("unexpected type; got %s; want %s", typ, TypeObject)
+		}
+		v.o.Visit(func(k []byte, v *Value) {
+			v.Type()
+		})
+		// =====================================================
+
+		// If we were to read it with Go with something like:
+		// err = json.Unmarshal([]byte(ret), &m)
+		// it would work, but (check top comment) other systems that validate encoding would reject it. (e.g.: python)
+		if valid := utf8.ValidString(v.String()); !valid {
+			t.Fatalf("invalid utf-8 string")
+		}
+	})
+}
+
+func TestHTMLSafety(t *testing.T) {
+	t.Run("html safety", func(t *testing.T) {
+		s := `{"comment":"<div onclick='stealCookies()'>Click me</div>"}`
+
+		v, err := Parse(s)
+		if err != nil {
+			t.Fatalf("unexpected error while parsing: %s", err)
+		}
+
+		// =========== This part ideally needs to go ===========
+		// In order to trigger the bug we need to visit all the keys and call Type() on them
+		// ...to eliminate typeRawString existence
+		v.o.Visit(func(k []byte, v *Value) {
+			v.Type()
+		})
+		// =====================================================
+
+		ret := v.String()
+		if strings.Contains(ret, "<") || strings.Contains(ret, ">") {
+			t.Fatalf("html not escaped")
+		}
+	})
 }
